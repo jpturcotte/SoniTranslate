@@ -8,8 +8,8 @@ pandas>=2.2.3,<2.3.0
 av<16.0.0
 numpy>=2.1.0,<2.3.0; python_version >="3.13" and python_version <"3.14"
 pyannote-audio>=3.3.2,<4.0.0
-torch~=2.8.0; python_version <"3.14"
-torchaudio~=2.8.0; python_version <"3.14"
+torch==2.7.1; python_version <"3.14"
+torchaudio==2.7.1; python_version <"3.14"
 transformers>=4.48.0
 yt-dlp
 gradio==4.19.2
