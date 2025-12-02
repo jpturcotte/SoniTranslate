@@ -21,11 +21,11 @@ Before you start installing and using SoniTranslate, there are a few things you 
 
 ```
 +-----------------------------------------------------------------------------+
-| NVIDIA-SMI 552.12       Driver Version: 552.12       CUDA Version: 12.4     |
+| NVIDIA-SMI 552.12       Driver Version: 552.12       CUDA Version: 12.8     |
 |-------------------------------+----------------------+----------------------+
 ```
 
-3. If you see that your CUDA version is less than 12.4, you should update your NVIDIA driver. Visit the NVIDIA website's driver download page (https://www.nvidia.com/Download/index.aspx) and enter your graphics card information.
+3. If you see that your CUDA version is less than 12.8, you should update your NVIDIA driver. Visit the NVIDIA website's driver download page (https://www.nvidia.com/Download/index.aspx) and enter your graphics card information.
 
 4. Accept the license agreement for using Pyannote. You need to have an account on Hugging Face and `accept the license to use the models`: https://huggingface.co/pyannote/speaker-diarization and https://huggingface.co/pyannote/segmentation
 5. Create a [huggingface token](https://huggingface.co/settings/tokens). Hugging Face is a natural language processing platform that provides access to state-of-the-art models and tools. You will need to create a token in order to use some of the automatic model download features in SoniTranslate. Follow the instructions on the Hugging Face website to create a token. When you are creating the new Access Token in Hugging Face, make sure to tick "Read access to contents of all public gated repos you can access".
@@ -52,15 +52,15 @@ python -m pip install pip==23.1.2 Setuptools==80.6.0
 git clone https://github.com/r3gm/SoniTranslate.git
 cd SoniTranslate
 ```
-3. Install CUDA Toolkit 12.4.1
+3. Install CUDA Toolkit 12.8.0
 
 ```
-conda install -c "nvidia/label/cuda-12.4.1" cuda-toolkit -y
+conda install -c "nvidia/label/cuda-12.8.0" cuda-toolkit -y
 ```
 
 4. Install PyTorch using conda
 ```
-conda install pytorch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 pytorch-cuda=12.4 -c pytorch -c nvidia -y
+conda install pytorch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 pytorch-cuda=12.8 -c pytorch -c nvidia -y
 ```
 
 5. Install required packages:
