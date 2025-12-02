@@ -1,15 +1,27 @@
 # Temporal requirements
-nest_asyncio
---extra-index-url https://download.pytorch.org/whl/cu118
-torch>=2.1.0+cu118
-torchvision>=0.16.0+cu118
-torchaudio>=2.1.0+cu118
+--extra-index-url https://download.pytorch.org/whl/cu128
 yt-dlp
 gradio==4.19.2
 pydub==0.25.1
 edge_tts==6.1.7
 deep_translator==1.11.4
-git+https://github.com/m-bain/whisperX.git@a5dca2c
+nltk>=3.9.1
+# Restrict numpy, onnxruntime, pandas, av to be compatible with Python 3.9
+numpy>=2.0.2,<2.1.0; python_version <"3.13"
+onnxruntime>=1.19,<1.20.0; python_version <"3.10"
+pandas>=2.2.3,<2.3.0
+av<16.0.0
+numpy>=2.1.0,<2.3.0; python_version >="3.13" and python_version <"3.14"
+whisperx==3.7.4
+ctranslate2>=4.5.0
+faster-whisper>=1.1.1
+torch~=2.8.0; python_version <"3.14"
+torchaudio~=2.8.0; python_version <"3.14"
+torchvision~=0.20.0; python_version <"3.14"
+transformers>=4.48.0
+pyannote-audio>=3.3.2,<4.0.0
+triton>=3.3.0; sys_platform == "linux" and platform_machine == "x86_64" and python_version <"3.14"
+nest_asyncio
 gTTS
 gradio_client==0.10.1
 praat-parselmouth>=0.4.3
@@ -21,7 +33,6 @@ git+https://github.com/facebookresearch/fairseq.git@refs/pull/5359/merge
 gdown
 rarfile
 IPython
-transformers
 accelerate
 optimum
 sentencepiece
