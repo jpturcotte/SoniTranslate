@@ -3,7 +3,7 @@
 yt-dlp
 gradio==4.19.2
 pydub==0.25.1
-edge_tts==6.1.7
+edge_tts==7.2.1
 deep_translator==1.11.4
 nltk>=3.9.1
 # Restrict numpy, onnxruntime, pandas, av to be compatible with Python 3.9
