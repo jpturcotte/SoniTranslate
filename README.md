@@ -9,6 +9,11 @@ If you’re looking for a meeting transcription API, consider checking out [Reca
 SonyTranslate is a powerful and user-friendly web application that allows you to easily translate videos into different languages. This repository hosts the code for the SonyTranslate web UI, which is built with the Gradio library to provide a seamless and interactive user experience.
 
 
+## Platform and Python compatibility
+- Supported Python versions: 3.9 through 3.13. Dependency pins avoid unsupported wheels on 3.14+ while keeping wheels for Python 3.10 (for example, NumPy 2.0.x on Python 3.10).【F:requirements.txt†L9-L20】【F:requirements_base.txt†L4-L21】
+- Operating systems: Windows 11 and Linux are supported for CPU/GPU workloads. Triton installs only on Linux x86_64, but core WhisperX components (including PyTorch and NumPy) resolve to Windows-compatible wheels from PyPI and the PyTorch index.【F:requirements.txt†L17-L23】【F:requirements_base.txt†L11-L23】
+
+
 | Description | Link |
 | ----------- | ---- |
 | 📙 Colab Notebook | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/R3gm/SoniTranslate/blob/main/SoniTranslate_Colab.ipynb) |
@@ -184,7 +189,7 @@ To install SoniTranslate, follow these steps:
 conda create -n sonitr python=3.10 -y
 conda activate sonitr
 python -m pip install pip==23.1.2 Setuptools==80.6.0
-conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=11.8 -c pytorch -c nvidia
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 ```
 
 2. Clone this github repository and navigate to it:
