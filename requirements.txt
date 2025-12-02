@@ -1,5 +1,5 @@
 # Temporal requirements
---extra-index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://download.pytorch.org/whl/cu124
 yt-dlp
 gradio==4.19.2
 pydub==0.25.1
@@ -15,9 +15,9 @@ av<16.0.0
 whisperx==3.7.4
 ctranslate2>=4.5.0
 faster-whisper>=1.1.1
-torch==2.7.1; python_version <"3.14"
-torchaudio==2.7.1; python_version <"3.14"
-torchvision==0.22.1; python_version <"3.14"
+torch==2.8.0; python_version <"3.14"
+torchaudio==2.8.0; python_version <"3.14"
+torchvision==0.23.0; python_version <"3.14"
 transformers>=4.48.0
 pyannote-audio>=3.3.2,<4.0.0
 triton>=3.3.0; sys_platform == "linux" and platform_machine == "x86_64" and python_version <"3.14"
