@@ -1,5 +1,5 @@
 # Temporal requirements
---extra-index-url https://download.pytorch.org/whl/cu124
+--extra-index-url https://download.pytorch.org/whl/cu128
 yt-dlp
 gradio==4.44.1
 pydub==0.25.1
