@@ -225,6 +225,15 @@ pip install -q piper-tts==1.2.0
 pip install -q -r requirements_xtts.txt
 ```
 
+> **Note:** Coqui XTTS now depends on the forked `coqpit-config` package and the
+> new `coqui-tts-trainer`. Uninstall the legacy packages and install the updated
+> pair to avoid conflicts:
+>
+> ```
+> pip uninstall coqpit trainer
+> pip install coqpit-config coqui-tts-trainer
+> ```
+
 The XTTS extras include a matching NumPy pin to keep binary wheels aligned with the
 main environment.
 
