@@ -641,7 +641,8 @@ def segments_coqui_tts(
 
     # Init TTS
     device = os.environ.get("SONITR_DEVICE")
-    model = TTS(model_id_coqui).to(device)
+    use_gpu = bool(device and device.startswith("cuda"))
+    model = TTS(model_id_coqui, gpu=use_gpu).to(device)
     sampling_rate = 24000
 
     # filtered_segments = filtered_coqui_segments['segments']
