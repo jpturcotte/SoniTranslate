@@ -1,10 +1,10 @@
 praat-parselmouth>=0.4.3
 pyworld==0.3.2
-# Use faiss-cpu built against NumPy 2.x to avoid _ARRAY_API import errors
-faiss-cpu==1.7.4.post2
+# Use faiss-cpu compatible with the NumPy 2.x pin above
+faiss-cpu==1.13.0
 torchcrepe==0.0.20
 ffmpeg-python>=0.2.0
-fairseq==0.12.2 
+fairseq==0.12.2
 gdown
 rarfile
 transformers
