@@ -1,4 +1,5 @@
 import gradio as gr
+from gradio_client import utils as gr_client_utils
 from soni_translate.logging_setup import (
     logger,
     set_logging_level,
@@ -112,6 +113,31 @@ directories = [
     for directory in directories
     if not os.path.exists(directory)
 ]
+
+
+_original_json_schema_to_python_type = gr_client_utils._json_schema_to_python_type
+
+
+def _json_schema_to_python_type_safe(schema, defs=None):
+    """Gracefully handle boolean schemas when generating Gradio API info."""
+
+    if isinstance(schema, bool):
+        return "Any" if schema else "Never"
+
+    return _original_json_schema_to_python_type(schema, defs)
+
+
+gr_client_utils._json_schema_to_python_type = _json_schema_to_python_type_safe
+
+
+def _json_schema_to_python_type(schema):
+    if isinstance(schema, bool):
+        return "Any" if schema else "Never"
+
+    return gr_client_utils._json_schema_to_python_type(schema)
+
+
+gr_client_utils.json_schema_to_python_type = _json_schema_to_python_type
 
 
 class TTS_Info:
@@ -2855,10 +2881,27 @@ if __name__ == "__main__":
 
     app.queue()
 
-    app.launch(
-        max_threads=1,
-        share=args.public_url,
-        show_error=True,
-        quiet=False,
-        debug=(True if logger.isEnabledFor(logging.DEBUG) else False),
-    )
+    try:
+        app.launch(
+            max_threads=1,
+            share=args.public_url,
+            show_error=True,
+            quiet=False,
+            debug=(True if logger.isEnabledFor(logging.DEBUG) else False),
+            server_name="0.0.0.0",
+        )
+    except ValueError as exc:
+        if "localhost is not accessible" not in str(exc) or args.public_url:
+            raise
+
+        logger.warning(
+            "Local Gradio launch failed; retrying with a shareable public link."
+        )
+        app.launch(
+            max_threads=1,
+            share=True,
+            show_error=True,
+            quiet=False,
+            debug=(True if logger.isEnabledFor(logging.DEBUG) else False),
+            server_name="0.0.0.0",
+        )
