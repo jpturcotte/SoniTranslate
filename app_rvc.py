@@ -124,6 +124,20 @@ def _json_schema_to_python_type_safe(schema, defs=None):
     if isinstance(schema, bool):
         return "Any" if schema else "Never"
 
+    # The upstream helper expects ``defs`` to be a mapping when resolving
+    # ``$ref`` entries, but Gradio sometimes calls it with ``None``.
+    # Provide a safe default to avoid ``TypeError: 'NoneType' object is not
+    # subscriptable`` when definitions are missing.
+    if defs is None:
+        defs = {}
+
+    # If a $ref is provided without a matching definition, fall back to "Any"
+    # instead of raising an exception so the API info can still be generated.
+    if isinstance(schema, dict) and "$ref" in schema:
+        ref = schema["$ref"].split("/")[-1]
+        if ref not in defs:
+            return "Any"
+
     return _original_json_schema_to_python_type(schema, defs)
 
 
