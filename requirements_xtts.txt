@@ -1,5 +1,7 @@
 # core deps
-numpy==1.23.5
+# Align numpy with the main environment to avoid binary mismatches with compiled
+# extensions (e.g., pyworld) when running XTTS extras.
+numpy>=2.0.2,<2.1
 cython>=0.29.30
 scipy>=1.11.2
 torch
@@ -53,6 +55,6 @@ unidecode>=1.3.2
 num2words
 spacy[ja]>=3
 
-# after this 
+# after this
 # pip install -r requirements_xtts.txt
 # pip install TTS==0.21.1  --no-deps
