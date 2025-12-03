@@ -33,6 +33,36 @@ class TTS_OperationError(Exception):
         super().__init__(self.message)
 
 
+def _is_cuda_device(device: str) -> bool:
+    return bool(device and device.lower().startswith("cuda"))
+
+
+def _get_device_with_default():
+    """Return the execution device, defaulting to CUDA when available.
+
+    Some CLI entry points may not set the SONITR_DEVICE environment variable,
+    which previously forced the TTS stack to fall back to CPU even when a GPU
+    was available. This helper mirrors the main app's behavior by selecting a
+    CUDA device when possible and keeps a consistent device string for checks
+    elsewhere in this module.
+    """
+
+    device = os.environ.get("SONITR_DEVICE")
+    if device:
+        device = device.strip()
+        if _is_cuda_device(device) and not torch.cuda.is_available():
+            logger.warning(
+                "SONITR_DEVICE requests CUDA, but torch reports no available GPU. "
+                "Falling back to CPU."
+            )
+            return "cpu"
+        return device
+
+    detected_device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.debug(f"Defaulting SONITR_DEVICE to '{detected_device}'")
+    return detected_device
+
+
 def verify_saved_file_and_size(filename):
     if not os.path.exists(filename):
         raise TTS_OperationError(f"File '{filename}' was not saved.")
@@ -206,8 +236,8 @@ def segments_bark_tts(
     from transformers import AutoProcessor, BarkModel
     from optimum.bettertransformer import BetterTransformer
 
-    device = os.environ.get("SONITR_DEVICE")
-    torch_dtype_env = torch.float16 if device == "cuda" else torch.float32
+    device = _get_device_with_default()
+    torch_dtype_env = torch.float16 if _is_cuda_device(device) else torch.float32
 
     # load model bark
     model = BarkModel.from_pretrained(
@@ -640,8 +670,8 @@ def segments_coqui_tts(
     )
 
     # Init TTS
-    device = os.environ.get("SONITR_DEVICE")
-    use_gpu = bool(device and device.startswith("cuda"))
+    device = _get_device_with_default()
+    use_gpu = _is_cuda_device(device)
     model = TTS(model_id_coqui, gpu=use_gpu).to(device)
     sampling_rate = 24000
 
@@ -745,7 +775,9 @@ def load_piper_model(
     try:
         import onnxruntime as rt
 
-        if rt.get_device() == "GPU" and os.environ.get("SONITR_DEVICE") == "cuda":
+        device = _get_device_with_default()
+
+        if rt.get_device() == "GPU" and _is_cuda_device(device):
             logger.debug("onnxruntime device > GPU")
             cuda = True
         else:
@@ -1473,7 +1505,7 @@ def toneconverter_freevc(
     )
 
     logger.info("FreeVC loading model...")
-    device_id = os.environ.get("SONITR_DEVICE")
+    device_id = _get_device_with_default()
     device = None if device_id == "cpu" else device_id
     try:
         from TTS.api import TTS
