@@ -19,6 +19,7 @@ torch==2.8.0; python_version <"3.14"
 torchaudio==2.8.0; python_version <"3.14"
 torchvision==0.23.0; python_version <"3.14"
 transformers>=4.48.0
+soxr>=0.3.7
 pyannote-audio>=3.3.2,<4.0.0
 triton>=3.3.0; sys_platform == "linux" and platform_machine == "x86_64" and python_version <"3.14"
 nest_asyncio

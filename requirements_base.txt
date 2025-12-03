@@ -11,6 +11,7 @@ pyannote-audio>=3.3.2,<4.0.0
 torch==2.8.0; python_version <"3.14"
 torchaudio==2.8.0; python_version <"3.14"
 transformers>=4.48.0
+soxr>=0.3.7
 yt-dlp
 gradio==4.44.1
 pydub==0.25.1
