@@ -793,12 +793,14 @@ def load_piper_model(
 
 
 def synthesize_text_to_audio_np_array(voice, text, synthesize_args):
-    audio_stream = voice.synthesize_stream_raw(text, **synthesize_args)
+    # Piper 1.3+ change: 'synthesize' returns an iterator of AudioChunk objects
+    # instead of a raw stream or buffer.
+    audio_stream = voice.synthesize(text, **synthesize_args)
 
-    # Collect the audio bytes into a single NumPy array
+    # Collect the audio bytes from each AudioChunk
     audio_data = b""
-    for audio_bytes in audio_stream:
-        audio_data += audio_bytes
+    for audio_chunk in audio_stream:
+        audio_data += audio_chunk.bytes
 
     # Ensure correct data type and convert audio bytes to NumPy array
     audio_np = np.frombuffer(audio_data, dtype=np.int16)
@@ -808,7 +810,7 @@ def synthesize_text_to_audio_np_array(voice, text, synthesize_args):
 def segments_vits_onnx_tts(filtered_onnx_vits_segments, TRANSLATE_AUDIO_TO):
     """
     Install:
-    pip install -q piper-tts==1.2.0 onnxruntime-gpu # for cuda118
+    pip install -q "piper-tts>=1.3.0" onnxruntime-gpu
     """
 
     data_dir = [
