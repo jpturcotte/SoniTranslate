@@ -81,8 +81,10 @@ After installing FFmpeg, you can install these optional packages.
 
 ```
 pip install -q -r requirements_xtts.txt
-pip install -q TTS==0.21.1  --no-deps
 ```
+
+The XTTS extras include a matching NumPy pin to keep binary wheels aligned with the
+main environment.
 
 [Piper TTS](https://github.com/rhasspy/piper) is a fast, local neural text to speech system that sounds great and is optimized for the Raspberry Pi 4. Piper is used in a variety of projects. Voices are trained with VITS and exported to the onnxruntime.
 

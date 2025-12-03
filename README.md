@@ -223,8 +223,10 @@ pip install -q piper-tts==1.2.0
 
 ```
 pip install -q -r requirements_xtts.txt
-pip install -q TTS==0.21.1  --no-deps
 ```
+
+The XTTS extras include a matching NumPy pin to keep binary wheels aligned with the
+main environment.
 
 
 ### Running SoniTranslate
