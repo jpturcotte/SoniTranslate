@@ -591,8 +591,10 @@ def segments_coqui_tts(
 ):
     """XTTS
     Install:
-    pip install -q TTS==0.21.1
-    pip install -q numpy==1.23.5
+    pip install -q -r requirements_xtts.txt
+
+    The requirements file pins NumPy to match the core environment to avoid
+    binary mismatches with compiled dependencies.
 
     Notes:
     - tts_name is the wav|mp3|ogg|m4a file for VC
