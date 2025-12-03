@@ -91,9 +91,7 @@ main environment.
 🚧 For Windows users, it's important to note that the Python module piper-tts is not fully supported on this operating system. While it works smoothly on Linux, Windows compatibility is currently experimental. If you still wish to install it on Windows, you can follow this experimental method:
 
 ```
-pip install https://github.com/R3gm/piper-phonemize/releases/download/1.2.0/piper_phonemize-1.2.0-cp310-cp310-win_amd64.whl
-pip install sherpa-onnx==1.9.12
-pip install piper-tts==1.2.0 --no-deps
+pip install "piper-tts>=1.3.0" onnxruntime-gpu
 ```
 
 8. Setting your [Hugging Face token](https://huggingface.co/settings/tokens) as an environment variable in quotes:

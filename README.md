@@ -216,7 +216,7 @@ After installing FFmpeg, you can install these optional packages.
 [Piper TTS](https://github.com/rhasspy/piper) is a fast, local neural text to speech system that sounds great and is optimized for the Raspberry Pi 4. Piper is used in a variety of projects. Voices are trained with VITS and exported to the onnxruntime.
 
 ```
-pip install -q piper-tts==1.2.0
+pip install -q "piper-tts>=1.3.0"
 ```
 
 [Coqui XTTS](https://github.com/coqui-ai/TTS) is a text-to-speech (TTS) model that lets you generate realistic voices in different languages. It can clone voices with just a short audio clip, even speak in a different language! It's like having a personal voice mimic for any text you need spoken.
