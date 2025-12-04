@@ -1254,7 +1254,9 @@ def se_process_audio_segments(
 
     # if exist not create wav
     if os.path.isfile(source_se_path):
-        se = torch.load(source_se_path).to(device)
+        # ``se.pth`` may contain pickled objects; disable weights-only loading so
+        # the checkpoint remains compatible with PyTorch 2.6+ defaults.
+        se = torch.load(source_se_path, weights_only=False).to(device)
         logger.debug(f"Previous created {source_se_path}")
     else:
         se = tone_color_converter.extract_se(source_audio_segs, source_se_path)

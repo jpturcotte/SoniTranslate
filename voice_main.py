@@ -146,7 +146,9 @@ def load_trained_model(model_path, config):
         raise ValueError("No model found")
 
     logger.info("Loading %s" % model_path)
-    cpt = torch.load(model_path, map_location="cpu")
+    # Explicitly disable weights-only loading to retain compatibility with older
+    # checkpoints that rely on pickled metadata objects.
+    cpt = torch.load(model_path, map_location="cpu", weights_only=False)
     tgt_sr = cpt["config"][-1]
     cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
     if_f0 = cpt.get("f0", 1)

@@ -331,7 +331,9 @@ class RMVPE:
     def __init__(self, model_path, is_half, device=None):
         self.resample_kernel = {}
         model = E2E(4, 1, (2, 2))
-        ckpt = torch.load(model_path, map_location="cpu")
+        # Some checkpoints include pickled metadata; keep weights_only disabled to
+        # ensure they continue to load under newer PyTorch defaults.
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt)
         model.eval()
         if is_half == True:
