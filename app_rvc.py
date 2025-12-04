@@ -7,8 +7,6 @@ from soni_translate.logging_setup import (
 ); configure_logging_libs() # noqa
 import whisperx
 import torch
-from omegaconf.listconfig import ListConfig
-from omegaconf.base import ContainerMetadata
 import os
 from soni_translate.audio_segments import create_translated_audio
 from soni_translate.text_to_speech import (
@@ -115,17 +113,6 @@ directories = [
     for directory in directories
     if not os.path.exists(directory)
 ]
-
-
-# Allow pyannote checkpoints containing OmegaConf metadata classes to load with
-# PyTorch's ``weights_only=True`` default.
-torch.serialization.add_safe_globals(
-    [
-        (ListConfig, "omegaconf.listconfig.ListConfig"),
-        (ContainerMetadata, "omegaconf.base.ContainerMetadata"),
-    ]
-)
-
 
 _original_json_schema_to_python_type = gr_client_utils._json_schema_to_python_type
 

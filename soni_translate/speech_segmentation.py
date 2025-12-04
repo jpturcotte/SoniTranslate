@@ -8,6 +8,7 @@ import torch
 import gc
 import os
 import soundfile as sf
+from contextlib import contextmanager
 from IPython.utils import capture # noqa
 from .language_configuration import EXTRA_ALIGN, INVERTED_LANGUAGES
 from .logging_setup import logger
@@ -56,6 +57,31 @@ COMPUTE_TYPE_CPU = [
 ]
 
 WHISPER_MODELS_PATH = './WHISPER_MODELS'
+
+
+@contextmanager
+def _force_weights_only_false():
+    """Temporarily default ``torch.load`` to ``weights_only=False``.
+
+    WhisperX loads the pyannote VAD model via Lightning, which ultimately calls
+    ``torch.load`` without exposing a ``weights_only`` override. Under PyTorch
+    2.6 the default flipped to ``True``, which breaks checkpoints containing
+    pickled metadata (e.g., OmegaConf objects). By forcing ``weights_only=False``
+    only for the duration of model loading, we avoid a global safe-global
+    allowlist while keeping the change scoped to this operation.
+    """
+
+    original_load = torch.load
+
+    def _load_with_weights_only_false(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    torch.load = _load_with_weights_only_false
+    try:
+        yield
+    finally:
+        torch.load = original_load
 
 
 def openai_api_whisper(
@@ -228,13 +254,14 @@ def transcribe_speech(
         asr_model = model_dir
         logger.info(f"ASR Model: {str(model_dir)}")
 
-    model = whisperx.load_model(
-        asr_model,
-        os.environ.get("SONITR_DEVICE"),
-        compute_type=compute_type,
-        language=SOURCE_LANGUAGE,
-        asr_options=asr_options,
-    )
+    with _force_weights_only_false():
+        model = whisperx.load_model(
+            asr_model,
+            os.environ.get("SONITR_DEVICE"),
+            compute_type=compute_type,
+            language=SOURCE_LANGUAGE,
+            asr_options=asr_options,
+        )
 
     audio = whisperx.load_audio(audio_wav)
     result = model.transcribe(
