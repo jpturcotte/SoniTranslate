@@ -74,7 +74,10 @@ def _force_weights_only_false():
     original_load = torch.load
 
     def _load_with_weights_only_false(*args, **kwargs):
-        kwargs.setdefault("weights_only", False)
+        # Always force ``weights_only=False`` even if a caller explicitly
+        # requests otherwise, since the pyannote checkpoints rely on pickled
+        # metadata that is blocked when ``weights_only=True``.
+        kwargs["weights_only"] = False
         return original_load(*args, **kwargs)
 
     torch.load = _load_with_weights_only_false
