@@ -10,6 +10,7 @@ import os
 import soundfile as sf
 import nltk
 import librosa
+import difflib
 from tqdm import tqdm
 from contextlib import contextmanager
 from IPython.utils import capture # noqa
@@ -162,6 +163,40 @@ def openai_api_whisper(
     return audio, result
 
 
+def find_best_overlap_cutoff(prev_tail, curr_head, search_window=60):
+    """Locate fuzzy overlap between previous and current transcription text.
+
+    Parameters
+    ----------
+    prev_tail: str
+        The accumulated transcription text from prior chunks.
+    curr_head: str
+        The freshly generated transcription for the current chunk.
+    search_window: int, optional
+        Maximum number of trailing/leading characters to search for overlap.
+
+    Returns
+    -------
+    int
+        The index in ``curr_head`` where unique text begins (i.e., after the
+        overlapping portion). ``0`` indicates no overlap found.
+    """
+
+    if not prev_tail or not curr_head:
+        return 0
+
+    tail = prev_tail[-search_window:]
+    head = curr_head[:search_window]
+
+    matcher = difflib.SequenceMatcher(None, tail, head, autojunk=False)
+    match = matcher.find_longest_match(0, len(tail), 0, len(head))
+
+    if match.size >= 5:
+        return match.b + match.size
+
+    return 0
+
+
 def granite_speech_transcribe(
     input_audio_file,
     model_id,
@@ -172,7 +207,7 @@ def granite_speech_transcribe(
 ):
     """Transcribe audio with IBM Granite Speech using direct model calls.
 
-    Includes Overlap-Stitch and Sentence-Level Timestamp Interpolation to
+    Includes fuzzy Overlap-Stitch and sentence-level timestamp interpolation to
     generate more accurate timestamps for downstream alignment.
     """
 
@@ -247,24 +282,30 @@ def granite_speech_transcribe(
     
     chunk_files = []
     chunk_times = []  # Store (start, end) for each chunk
-    
+
     current_start = 0.0
     chunk_idx = 0
-    
+
     while current_start < total_duration:
         chunk_end = min(current_start + chunk_length, total_duration)
         duration = chunk_end - current_start
-        
+
         filename = f"{output_directory}/output{chunk_idx:03d}.ogg"
-        
+
         # Extract specific segment with ffmpeg
         # -ss seeks to start, -t sets duration
-        cm = f'ffmpeg -y -hide_banner -loglevel error -ss {current_start} -t {duration} -i "{input_audio_file}" -c:a libvorbis "{filename}"'
+        cm = (
+            f'ffmpeg -y -hide_banner -loglevel error -ss {current_start} -t {duration} '
+            f'-i "{input_audio_file}" -c:a libvorbis "{filename}"'
+        )
         run_command(cm)
-        
+
         chunk_files.append(filename)
         chunk_times.append((current_start, chunk_end))
-        
+
+        if chunk_end >= total_duration:
+            break
+
         # Advance by length minus overlap
         current_start += (chunk_length - chunk_overlap)
         chunk_idx += 1
@@ -278,8 +319,8 @@ def granite_speech_transcribe(
         unit="chunk",
     )
 
-    # Buffer for overlapping text stitching
-    previous_text_tail = ""
+    # Accumulate full transcription to compare overlapping regions across chunks
+    full_transcription_text = ""
 
     for i, chunk_path in enumerate(progress_bar):
         try:
@@ -319,39 +360,38 @@ def granite_speech_transcribe(
         if not text:
             continue
 
-        # --- STITCHING LOGIC ---
-        # If we have overlap, we might have duplicated words. 
-        # A simple approach: if the new text starts with the tail of the previous text, trim it.
-        # Ideally, you'd use a fuzzy match, but this handles identical overlaps.
-        if previous_text_tail and text.startswith(previous_text_tail):
-            text = text[len(previous_text_tail):].strip()
-        
-        # Update tail for next iteration (approx last 10 chars or 2 words)
-        # We store the text that MIGHT appear in the next chunk's start
-        # Since we overlap by ~1s, that's roughly 2-3 words.
-        previous_text_tail = " ".join(text.split()[-3:]) if len(text.split()) > 3 else text
+        # --- FUZZY STITCHING LOGIC ---
+        cutoff = find_best_overlap_cutoff(full_transcription_text, text)
+        unique_text = text[cutoff:].strip()
+
+        if not unique_text:
+            continue
+
+        # Append for future overlap comparisons
+        full_transcription_text = (full_transcription_text + " " + unique_text).strip()
 
         # --- SENTENCE SEGMENTATION & TIMESTAMP INTERPOLATION ---
         # Get the actual time window of this chunk
         c_start, c_end = chunk_times[i]
-        
-        # Tokenize into sentences
-        sentences = nltk.sent_tokenize(text)
-        if not sentences:
-            sentences = [text]
 
-        # Calculate lengths for proportional timestamping
+        sentences = nltk.sent_tokenize(unique_text)
+        if not sentences:
+            sentences = [unique_text]
+
         lengths = [max(len(s), 1) for s in sentences]
         total_len = sum(lengths)
-        
-        # Map sentences to the chunk's time window
-        # We assume speech is distributed somewhat evenly across the text length
-        cursor = c_start
+
+        seg_start_offset = 0.0
+        if i > 0 and cutoff > 0:
+            seg_start_offset = chunk_overlap
+
+        available_duration = max((c_end - c_start) - seg_start_offset, 0.1)
+        cursor = c_start + seg_start_offset
+
         for s_text, s_len in zip(sentences, lengths):
             proportion = s_len / total_len
-            duration = proportion * (c_end - c_start)
-            
-            # Create the segment
+            duration = proportion * available_duration
+
             seg_end = min(cursor + duration, total_duration)
             segments.append({
                 "text": s_text,
