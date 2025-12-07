@@ -169,10 +169,12 @@ def granite_speech_transcribe(
 ):
     """Transcribe audio with IBM Granite Speech using the Transformers pipeline.
 
-    Granite currently returns chunk-level timestamps when available. When they are
-    absent, fall back to a heuristic that allocates timestamps to sentences based
-    on their relative lengths across the total audio duration, which keeps the
-    downstream alignment pipeline compatible with Whisper-style segments.
+    The Transformers ASR pipeline for Granite does not currently support
+    ``return_timestamps``. To provide timestamps for downstream alignment, we
+    manually split the audio into fixed-size chunks (30s by default) and assign
+    chunk-level start and end times to the transcriptions. When no text is
+    produced, we fall back to sentence-based allocation over the total duration
+    to maintain compatibility with Whisper-style segments.
     """
 
     from transformers import pipeline
@@ -202,7 +204,6 @@ def granite_speech_transcribe(
         max_new_tokens=128,
         chunk_length_s=30,
         batch_size=batch_size,
-        return_timestamps=True,
         torch_dtype=torch_dtype,
         device=device,
     )
@@ -211,26 +212,55 @@ def granite_speech_transcribe(
     if source_lang and source_lang != "auto":
         generate_kwargs["language"] = source_lang
 
-    result = pipe(input_audio_file, generate_kwargs=generate_kwargs)
     total_duration = sf.info(input_audio_file).duration
-    text = result.get("text", "").strip()
-    language = source_lang or result.get("language") or "en"
+    chunk_duration = 30.0
+
+    output_directory = "./granite_audio_parts"
+    os.makedirs(output_directory, exist_ok=True)
+    remove_directory_contents(output_directory)
+
+    if total_duration > chunk_duration:
+        cm = (
+            f'ffmpeg -i "{input_audio_file}" -f segment -segment_time {chunk_duration} '
+            f'-c:a libvorbis "{output_directory}/output%03d.ogg"'
+        )
+        run_command(cm)
+        chunk_files = sorted(
+            [f"{output_directory}/{f}" for f in os.listdir(output_directory) if f.endswith('.ogg')]
+        )
+    else:
+        one_file = f"{output_directory}/output000.ogg"
+        cm = f'ffmpeg -i "{input_audio_file}" -c:a libvorbis {one_file}'
+        run_command(cm)
+        chunk_files = [one_file]
 
     segments = []
-    for chunk in result.get("chunks", []):
-        start, end = chunk.get("timestamp", (None, None))
-        if start is None or end is None:
-            continue
-        segments.append({
-            "text": chunk.get("text", ""),
-            "start": float(start),
-            "end": float(end)
-        })
+    full_text = []
+    language = source_lang if source_lang else None
 
-    if not segments and text:
-        sentences = nltk.sent_tokenize(text)
+    for i, chunk in enumerate(chunk_files):
+        result = pipe(chunk, generate_kwargs=generate_kwargs)
+        text = result.get("text", "").strip()
+        if text:
+            full_text.append(text)
+            chunk_start = i * chunk_duration
+            chunk_end = min((i + 1) * chunk_duration, total_duration)
+            segments.append({
+                "text": text,
+                "start": chunk_start,
+                "end": chunk_end,
+            })
+
+        if not language:
+            language = result.get("language")
+
+    language = language or "en"
+
+    if not segments and full_text:
+        text = " ".join(full_text).strip()
+        sentences = nltk.sent_tokenize(text) if text else []
         if not sentences:
-            sentences = [text]
+            sentences = [text] if text else []
         lengths = [max(len(sentence.strip()), 1) for sentence in sentences]
         total_length = sum(lengths)
         cursor = 0.0
@@ -249,6 +279,7 @@ def granite_speech_transcribe(
             segments[-1]["end"] = total_duration
 
     if not segments:
+        text = " ".join(full_text).strip()
         segments = [{"text": text, "start": 0.0, "end": total_duration}]
 
     audio = whisperx.load_audio(input_audio_file)
