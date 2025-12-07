@@ -9,6 +9,7 @@ import gc
 import os
 import soundfile as sf
 import nltk
+import librosa
 from contextlib import contextmanager
 from IPython.utils import capture # noqa
 from .language_configuration import EXTRA_ALIGN, INVERTED_LANGUAGES
@@ -167,17 +168,17 @@ def granite_speech_transcribe(
     batch_size=16,
     source_lang=None,
 ):
-    """Transcribe audio with IBM Granite Speech using the Transformers pipeline.
+    """Transcribe audio with IBM Granite Speech using direct model calls.
 
-    The Transformers ASR pipeline for Granite does not currently support
-    ``return_timestamps``. To provide timestamps for downstream alignment, we
-    manually split the audio into fixed-size chunks (30s by default) and assign
-    chunk-level start and end times to the transcriptions. When no text is
-    produced, we fall back to sentence-based allocation over the total duration
-    to maintain compatibility with Whisper-style segments.
+    The generic Transformers ASR pipeline forwards keyword arguments that the
+    Granite Speech feature extractor does not accept. Instead of patching the
+    extractor, prepare the inputs manually with ``AutoProcessor`` and generate
+    outputs with ``AutoModelForSpeechSeq2Seq``. Audio is chunked into
+    fixed-length segments (30s) so downstream alignment receives timestamps even
+    though Granite currently omits per-token timing.
     """
 
-    from transformers import AutoFeatureExtractor, pipeline
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
     try:
         nltk.data.find("tokenizers/punkt")
@@ -196,45 +197,30 @@ def granite_speech_transcribe(
     else:
         torch_dtype = torch.float32
 
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
+    try:
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_id,
+            torch_dtype=torch_dtype,
+        ).to(device)
+    except Exception as exc:
+        logger.error(f"Failed to load Granite Speech model: {exc}")
+        raise
 
-    # The Granite Speech feature extractor currently does not accept a
-    # ``sampling_rate`` argument, but the Transformers ASR pipeline passes it
-    # when chunking audio. Patch the class-level callable (guarded for
-    # idempotency) so every Granite extractor instance ignores the extra keyword
-    # and remains compatible with the pipeline.
-    if feature_extractor.__class__.__name__ == "GraniteSpeechFeatureExtractor":
-        cls = feature_extractor.__class__
-
-        if not getattr(cls, "_sampling_rate_patched", False):
-            original_call = cls.__call__
-
-            def _call_with_optional_sampling_rate(self, *args, **kwargs):
-                # The pipeline forwards ``sampling_rate`` and ``return_tensors``
-                # while chunking audio. The Granite extractor does not accept
-                # them, so drop both to avoid runtime errors.
-                kwargs.pop("sampling_rate", None)
-                kwargs.pop("return_tensors", None)
-                return original_call(self, *args, **kwargs)
-
-            cls.__call__ = _call_with_optional_sampling_rate
-            cls._sampling_rate_patched = True
-
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model_id,
-        tokenizer=model_id,
-        feature_extractor=feature_extractor,
-        max_new_tokens=128,
-        chunk_length_s=30,
-        batch_size=batch_size,
-        torch_dtype=torch_dtype,
-        device=device,
+    prompt_text = "Transcribe the audio."
+    conversation = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio"},
+                {"type": "text", "text": prompt_text},
+            ],
+        }
+    ]
+    text_prompt = processor.apply_chat_template(
+        conversation,
+        add_generation_prompt=True,
     )
-
-    generate_kwargs = {}
-    if source_lang and source_lang != "auto":
-        generate_kwargs["language"] = source_lang
 
     total_duration = sf.info(input_audio_file).duration
     chunk_duration = 30.0
@@ -250,7 +236,11 @@ def granite_speech_transcribe(
         )
         run_command(cm)
         chunk_files = sorted(
-            [f"{output_directory}/{f}" for f in os.listdir(output_directory) if f.endswith('.ogg')]
+            [
+                f"{output_directory}/{f}"
+                for f in os.listdir(output_directory)
+                if f.endswith(".ogg")
+            ]
         )
     else:
         one_file = f"{output_directory}/output000.ogg"
@@ -260,23 +250,43 @@ def granite_speech_transcribe(
 
     segments = []
     full_text = []
-    language = source_lang if source_lang else None
+    language = source_lang or None
 
     for i, chunk in enumerate(chunk_files):
-        result = pipe(chunk, generate_kwargs=generate_kwargs)
-        text = result.get("text", "").strip()
+        try:
+            audio_array, _ = librosa.load(chunk, sr=16000)
+            inputs = processor(
+                text=text_prompt,
+                audios=audio_array,
+                sampling_rate=16000,
+                return_tensors="pt",
+            ).to(device)
+
+            prompt_length = inputs.input_ids.shape[1] if hasattr(inputs, "input_ids") else 0
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=128,
+            )
+            new_tokens = generated_ids[:, prompt_length:]
+            text = processor.batch_decode(
+                new_tokens,
+                skip_special_tokens=True,
+            )[0].strip()
+        except Exception as exc:
+            logger.error(f"Error processing chunk {chunk}: {exc}")
+            continue
+
         if text:
             full_text.append(text)
             chunk_start = i * chunk_duration
             chunk_end = min((i + 1) * chunk_duration, total_duration)
-            segments.append({
-                "text": text,
-                "start": chunk_start,
-                "end": chunk_end,
-            })
-
-        if not language:
-            language = result.get("language")
+            segments.append(
+                {
+                    "text": text,
+                    "start": chunk_start,
+                    "end": chunk_end,
+                }
+            )
 
     language = language or "en"
 
@@ -293,18 +303,26 @@ def granite_speech_transcribe(
             duration = proportion * total_duration
             start_time = cursor
             end_time = min(total_duration, start_time + duration)
-            segments.append({
-                "text": sentence,
-                "start": start_time,
-                "end": end_time,
-            })
+            segments.append(
+                {
+                    "text": sentence,
+                    "start": start_time,
+                    "end": end_time,
+                }
+            )
             cursor = end_time
         if segments:
             segments[-1]["end"] = total_duration
 
     if not segments:
         text = " ".join(full_text).strip()
-        segments = [{"text": text, "start": 0.0, "end": total_duration}]
+        segments = [
+            {
+                "text": text,
+                "start": 0.0,
+                "end": total_duration,
+            }
+        ]
 
     audio = whisperx.load_audio(input_audio_file)
     return audio, {"segments": segments, "language": language}
