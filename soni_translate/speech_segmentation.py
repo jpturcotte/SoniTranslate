@@ -172,18 +172,14 @@ def granite_speech_transcribe(
 ):
     """Transcribe audio with IBM Granite Speech using direct model calls.
 
-    The generic Transformers ASR pipeline forwards keyword arguments that the
-    Granite Speech feature extractor does not accept. Instead of patching the
-    extractor, prepare the inputs manually with ``AutoProcessor`` and generate
-    outputs with ``AutoModelForSpeechSeq2Seq``. Audio is chunked into
-    fixed-length segments so downstream alignment receives timestamps even
-    though Granite currently omits per-token timing. The chunk length comes from
-    the UI's *Segment Duration Limit* setting to keep behavior consistent across
-    models.
+    Includes Overlap-Stitch and Sentence-Level Timestamp Interpolation to
+    generate more accurate timestamps for downstream alignment.
     """
 
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+    import nltk
 
+    # Ensure NLTK data is available for sentence splitting
     try:
         nltk.data.find("tokenizers/punkt")
     except LookupError:
@@ -194,6 +190,7 @@ def granite_speech_transcribe(
         nltk.download("punkt_tab")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Select compute type
     if compute_type == "float32":
         torch_dtype = torch.float32
     else:
@@ -215,6 +212,7 @@ def granite_speech_transcribe(
         logger.error(f"Failed to load Granite Speech model: {exc}")
         raise
 
+    # Granite Prompt Setup
     system_prompt = (
         "Knowledge Cutoff Date: April 2024.\n"
         "Today's Date: April 9, 2025.\n"
@@ -233,45 +231,60 @@ def granite_speech_transcribe(
         add_generation_prompt=True,
     )
 
+    # --- CHUNKING WITH OVERLAP ---
     total_duration = sf.info(input_audio_file).duration
-    chunk_duration = float(max(segment_duration_limit, 1))
+    # Use the limit provided, but default to 30s if too small
+    chunk_length = float(max(segment_duration_limit, 5))
+    chunk_overlap = 1.0  # 1 second overlap to catch split words
 
     output_directory = "./granite_audio_parts"
     os.makedirs(output_directory, exist_ok=True)
     remove_directory_contents(output_directory)
 
-    if total_duration > chunk_duration:
-        cm = (
-            f'ffmpeg -i "{input_audio_file}" -f segment -segment_time {chunk_duration} '
-            f'-c:a libvorbis "{output_directory}/output%03d.ogg"'
-        )
+    # Use ffmpeg to segment with overlap is complex, so we calculate time segments manually
+    # and extract using librosa or ffmpeg seek. Here we stick to ffmpeg for stability,
+    # but we generate specific commands for each overlapping chunk.
+    
+    chunk_files = []
+    chunk_times = []  # Store (start, end) for each chunk
+    
+    current_start = 0.0
+    chunk_idx = 0
+    
+    while current_start < total_duration:
+        chunk_end = min(current_start + chunk_length, total_duration)
+        duration = chunk_end - current_start
+        
+        filename = f"{output_directory}/output{chunk_idx:03d}.ogg"
+        
+        # Extract specific segment with ffmpeg
+        # -ss seeks to start, -t sets duration
+        cm = f'ffmpeg -y -hide_banner -loglevel error -ss {current_start} -t {duration} -i "{input_audio_file}" -c:a libvorbis "{filename}"'
         run_command(cm)
-        chunk_files = sorted(
-            [
-                f"{output_directory}/{f}"
-                for f in os.listdir(output_directory)
-                if f.endswith(".ogg")
-            ]
-        )
-    else:
-        one_file = f"{output_directory}/output000.ogg"
-        cm = f'ffmpeg -i "{input_audio_file}" -c:a libvorbis {one_file}'
-        run_command(cm)
-        chunk_files = [one_file]
+        
+        chunk_files.append(filename)
+        chunk_times.append((current_start, chunk_end))
+        
+        # Advance by length minus overlap
+        current_start += (chunk_length - chunk_overlap)
+        chunk_idx += 1
 
     segments = []
-    full_text = []
-    language = source_lang or None
-
+    language = source_lang or "en"
+    
     progress_bar = tqdm(
         chunk_files,
         desc="Granite chunk processing",
         unit="chunk",
     )
 
-    for i, chunk in enumerate(progress_bar):
+    # Buffer for overlapping text stitching
+    previous_text_tail = ""
+
+    for i, chunk_path in enumerate(progress_bar):
         try:
-            audio_array, _ = librosa.load(chunk, sr=16000)
+            # Load audio for the model
+            audio_array, _ = librosa.load(chunk_path, sr=16000)
 
             model_inputs = processor(
                 text_prompt,
@@ -298,59 +311,64 @@ def granite_speech_transcribe(
                 add_special_tokens=False,
                 skip_special_tokens=True,
             )[0].strip()
+
         except Exception as exc:
-            logger.error(f"Error processing chunk {chunk}: {exc}")
+            logger.error(f"Error processing chunk {chunk_path}: {exc}")
             continue
 
-        if text:
-            full_text.append(text)
-            chunk_start = i * chunk_duration
-            chunk_end = min((i + 1) * chunk_duration, total_duration)
-            segments.append(
-                {
-                    "text": text,
-                    "start": chunk_start,
-                    "end": chunk_end,
-                }
-            )
+        if not text:
+            continue
+
+        # --- STITCHING LOGIC ---
+        # If we have overlap, we might have duplicated words. 
+        # A simple approach: if the new text starts with the tail of the previous text, trim it.
+        # Ideally, you'd use a fuzzy match, but this handles identical overlaps.
+        if previous_text_tail and text.startswith(previous_text_tail):
+            text = text[len(previous_text_tail):].strip()
+        
+        # Update tail for next iteration (approx last 10 chars or 2 words)
+        # We store the text that MIGHT appear in the next chunk's start
+        # Since we overlap by ~1s, that's roughly 2-3 words.
+        previous_text_tail = " ".join(text.split()[-3:]) if len(text.split()) > 3 else text
+
+        # --- SENTENCE SEGMENTATION & TIMESTAMP INTERPOLATION ---
+        # Get the actual time window of this chunk
+        c_start, c_end = chunk_times[i]
+        
+        # Tokenize into sentences
+        sentences = nltk.sent_tokenize(text)
+        if not sentences:
+            sentences = [text]
+
+        # Calculate lengths for proportional timestamping
+        lengths = [max(len(s), 1) for s in sentences]
+        total_len = sum(lengths)
+        
+        # Map sentences to the chunk's time window
+        # We assume speech is distributed somewhat evenly across the text length
+        cursor = c_start
+        for s_text, s_len in zip(sentences, lengths):
+            proportion = s_len / total_len
+            duration = proportion * (c_end - c_start)
+            
+            # Create the segment
+            seg_end = min(cursor + duration, total_duration)
+            segments.append({
+                "text": s_text,
+                "start": cursor,
+                "end": seg_end
+            })
+            cursor = seg_end
 
     progress_bar.close()
 
-    language = language or "en"
-
-    if not segments and full_text:
-        text = " ".join(full_text).strip()
-        sentences = nltk.sent_tokenize(text) if text else []
-        if not sentences:
-            sentences = [text] if text else []
-        lengths = [max(len(sentence.strip()), 1) for sentence in sentences]
-        total_length = sum(lengths)
-        cursor = 0.0
-        for sentence, sentence_length in zip(sentences, lengths):
-            proportion = sentence_length / total_length if total_length else 1 / len(sentences)
-            duration = proportion * total_duration
-            start_time = cursor
-            end_time = min(total_duration, start_time + duration)
-            segments.append(
-                {
-                    "text": sentence,
-                    "start": start_time,
-                    "end": end_time,
-                }
-            )
-            cursor = end_time
-        if segments:
-            segments[-1]["end"] = total_duration
-
+    # Fallback if nothing was transcribed
     if not segments:
-        text = " ".join(full_text).strip()
-        segments = [
-            {
-                "text": text,
-                "start": 0.0,
-                "end": total_duration,
-            }
-        ]
+        segments = [{"text": "", "start": 0.0, "end": total_duration}]
+
+    # Ensure last segment doesn't exceed total duration
+    if segments[-1]["end"] > total_duration:
+        segments[-1]["end"] = total_duration
 
     audio = whisperx.load_audio(input_audio_file)
     return audio, {"segments": segments, "language": language}
