@@ -8,6 +8,7 @@ import torch
 import gc
 import os
 import soundfile as sf
+import nltk
 from contextlib import contextmanager
 from IPython.utils import capture # noqa
 from .language_configuration import EXTRA_ALIGN, INVERTED_LANGUAGES
@@ -33,6 +34,7 @@ ASR_MODEL_OPTIONS = [
     "distil-small.en",
     "distil-medium.en",
     "OpenAI_API_Whisper",
+    "ibm-granite/granite-speech-3.3-2b",
 ]
 
 COMPUTE_TYPE_GPU = [
@@ -158,6 +160,101 @@ def openai_api_whisper(
     return audio, result
 
 
+def granite_speech_transcribe(
+    input_audio_file,
+    model_id,
+    compute_type="float16",
+    batch_size=16,
+    source_lang=None,
+):
+    """Transcribe audio with IBM Granite Speech using the Transformers pipeline.
+
+    Granite currently returns chunk-level timestamps when available. When they are
+    absent, fall back to a heuristic that allocates timestamps to sentences based
+    on their relative lengths across the total audio duration, which keeps the
+    downstream alignment pipeline compatible with Whisper-style segments.
+    """
+
+    from transformers import pipeline
+
+    try:
+        nltk.data.find("tokenizers/punkt")
+    except LookupError:
+        nltk.download("punkt")
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if compute_type == "bfloat16" and torch.cuda.is_available():
+        torch_dtype = torch.bfloat16
+    elif compute_type in {"float16", "int8", "int8_float16", "int8_bfloat16"} and torch.cuda.is_available():
+        torch_dtype = torch.float16
+    else:
+        torch_dtype = torch.float32
+
+    pipe = pipeline(
+        "automatic-speech-recognition",
+        model=model_id,
+        tokenizer=model_id,
+        feature_extractor=model_id,
+        max_new_tokens=128,
+        chunk_length_s=30,
+        batch_size=batch_size,
+        return_timestamps=True,
+        torch_dtype=torch_dtype,
+        device=device,
+    )
+
+    generate_kwargs = {}
+    if source_lang and source_lang != "auto":
+        generate_kwargs["language"] = source_lang
+
+    result = pipe(input_audio_file, generate_kwargs=generate_kwargs)
+    total_duration = sf.info(input_audio_file).duration
+    text = result.get("text", "").strip()
+    language = source_lang or result.get("language") or "en"
+
+    segments = []
+    for chunk in result.get("chunks", []):
+        start, end = chunk.get("timestamp", (None, None))
+        if start is None or end is None:
+            continue
+        segments.append({
+            "text": chunk.get("text", ""),
+            "start": float(start),
+            "end": float(end)
+        })
+
+    if not segments and text:
+        sentences = nltk.sent_tokenize(text)
+        if not sentences:
+            sentences = [text]
+        lengths = [max(len(sentence.strip()), 1) for sentence in sentences]
+        total_length = sum(lengths)
+        cursor = 0.0
+        for sentence, sentence_length in zip(sentences, lengths):
+            proportion = sentence_length / total_length if total_length else 1 / len(sentences)
+            duration = proportion * total_duration
+            start_time = cursor
+            end_time = min(total_duration, start_time + duration)
+            segments.append({
+                "text": sentence,
+                "start": start_time,
+                "end": end_time,
+            })
+            cursor = end_time
+        if segments:
+            segments[-1]["end"] = total_duration
+
+    if not segments:
+        segments = [{"text": text, "start": 0.0, "end": total_duration}]
+
+    audio = whisperx.load_audio(input_audio_file)
+    return audio, {"segments": segments, "language": language}
+
+
 def find_whisper_models():
     path = WHISPER_MODELS_PATH
     folders = []
@@ -205,6 +302,15 @@ def transcribe_speech(
                 "the literalization of numbers."
             )
         return openai_api_whisper(audio_wav, SOURCE_LANGUAGE)
+
+    if asr_model == "ibm-granite/granite-speech-3.3-2b":
+        return granite_speech_transcribe(
+            audio_wav,
+            asr_model,
+            compute_type,
+            batch_size,
+            SOURCE_LANGUAGE,
+        )
 
     # https://github.com/openai/whisper/discussions/277
     prompt = "以下是普通话的句子。" if SOURCE_LANGUAGE == "zh" else None
