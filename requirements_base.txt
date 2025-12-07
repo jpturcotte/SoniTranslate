@@ -10,7 +10,9 @@ av<16.0.0
 pyannote-audio>=3.3.2,<4.0.0
 torch==2.8.0; python_version <"3.14"
 torchaudio==2.8.0; python_version <"3.14"
-transformers>=4.49.0
+transformers>=4.52.4
+peft
+soundfile
 soxr>=0.3.7
 yt-dlp
 gradio==4.44.1
