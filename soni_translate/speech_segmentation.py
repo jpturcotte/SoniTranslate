@@ -10,6 +10,7 @@ import os
 import soundfile as sf
 import nltk
 import librosa
+from tqdm import tqdm
 from contextlib import contextmanager
 from IPython.utils import capture # noqa
 from .language_configuration import EXTRA_ALIGN, INVERTED_LANGUAGES
@@ -259,7 +260,13 @@ def granite_speech_transcribe(
     full_text = []
     language = source_lang or None
 
-    for i, chunk in enumerate(chunk_files):
+    progress_bar = tqdm(
+        chunk_files,
+        desc="Granite chunk processing",
+        unit="chunk",
+    )
+
+    for i, chunk in enumerate(progress_bar):
         try:
             audio_array, _ = librosa.load(chunk, sr=16000)
 
@@ -303,6 +310,8 @@ def granite_speech_transcribe(
                     "end": chunk_end,
                 }
             )
+
+    progress_bar.close()
 
     language = language or "en"
 
