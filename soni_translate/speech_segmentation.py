@@ -190,32 +190,42 @@ def granite_speech_transcribe(
         nltk.download("punkt_tab")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    if compute_type == "bfloat16" and torch.cuda.is_available():
-        torch_dtype = torch.bfloat16
-    elif compute_type in {"float16", "int8", "int8_float16", "int8_bfloat16"} and torch.cuda.is_available():
-        torch_dtype = torch.float16
-    else:
+    if compute_type == "float32":
         torch_dtype = torch.float32
+    else:
+        torch_dtype = (
+            torch.bfloat16
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            else torch.float16
+        )
 
     try:
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(
             model_id,
+            device_map=device,
             torch_dtype=torch_dtype,
-        ).to(device)
+        )
+        tokenizer = processor.tokenizer
     except Exception as exc:
         logger.error(f"Failed to load Granite Speech model: {exc}")
         raise
 
-    prompt_text = "Transcribe the provided audio."
-    conversation = [
-        {
-            "role": "user",
-            "content": prompt_text,
-        }
+    system_prompt = (
+        "Knowledge Cutoff Date: April 2024.\n"
+        "Today's Date: April 9, 2025.\n"
+        "You are Granite, developed by IBM. You are a helpful AI assistant"
+    )
+    user_prompt = "<|audio|>can you transcribe the speech into a written format?"
+
+    chat = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
     ]
-    text_prompt = processor.apply_chat_template(
-        conversation,
+
+    text_prompt = tokenizer.apply_chat_template(
+        chat,
+        tokenize=False,
         add_generation_prompt=True,
     )
 
@@ -252,21 +262,30 @@ def granite_speech_transcribe(
     for i, chunk in enumerate(chunk_files):
         try:
             audio_array, _ = librosa.load(chunk, sr=16000)
-            inputs = processor(
-                text=text_prompt,
-                audio=audio_array,
-                sampling_rate=16000,
+
+            model_inputs = processor(
+                text_prompt,
+                audio_array,
+                device=device,
                 return_tensors="pt",
             ).to(device)
 
-            prompt_length = inputs.input_ids.shape[1] if hasattr(inputs, "input_ids") else 0
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=128,
+            model_outputs = model.generate(
+                **model_inputs,
+                max_new_tokens=400,
+                do_sample=False,
+                num_beams=1,
             )
-            new_tokens = generated_ids[:, prompt_length:]
-            text = processor.batch_decode(
+
+            num_input_tokens = model_inputs["input_ids"].shape[-1]
+            new_tokens = torch.unsqueeze(
+                model_outputs[0, num_input_tokens:],
+                dim=0,
+            )
+
+            text = tokenizer.batch_decode(
                 new_tokens,
+                add_special_tokens=False,
                 skip_special_tokens=True,
             )[0].strip()
         except Exception as exc:
