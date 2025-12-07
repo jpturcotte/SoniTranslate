@@ -9,8 +9,8 @@ import gc
 import os
 import soundfile as sf
 import nltk
-import inspect
-import types
+import librosa
+from tqdm import tqdm
 from contextlib import contextmanager
 from IPython.utils import capture # noqa
 from .language_configuration import EXTRA_ALIGN, INVERTED_LANGUAGES
@@ -169,17 +169,17 @@ def granite_speech_transcribe(
     batch_size=16,
     source_lang=None,
 ):
-    """Transcribe audio with IBM Granite Speech using the Transformers pipeline.
+    """Transcribe audio with IBM Granite Speech using direct model calls.
 
-    The Transformers ASR pipeline for Granite does not currently support
-    ``return_timestamps``. To provide timestamps for downstream alignment, we
-    manually split the audio into fixed-size chunks (30s by default) and assign
-    chunk-level start and end times to the transcriptions. When no text is
-    produced, we fall back to sentence-based allocation over the total duration
-    to maintain compatibility with Whisper-style segments.
+    The generic Transformers ASR pipeline forwards keyword arguments that the
+    Granite Speech feature extractor does not accept. Instead of patching the
+    extractor, prepare the inputs manually with ``AutoProcessor`` and generate
+    outputs with ``AutoModelForSpeechSeq2Seq``. Audio is chunked into
+    fixed-length segments (30s) so downstream alignment receives timestamps even
+    though Granite currently omits per-token timing.
     """
 
-    from transformers import pipeline
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
     try:
         nltk.data.find("tokenizers/punkt")
@@ -191,44 +191,44 @@ def granite_speech_transcribe(
         nltk.download("punkt_tab")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    if compute_type == "bfloat16" and torch.cuda.is_available():
-        torch_dtype = torch.bfloat16
-    elif compute_type in {"float16", "int8", "int8_float16", "int8_bfloat16"} and torch.cuda.is_available():
-        torch_dtype = torch.float16
-    else:
+    if compute_type == "float32":
         torch_dtype = torch.float32
-
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model_id,
-        tokenizer=model_id,
-        feature_extractor=model_id,
-        max_new_tokens=128,
-        chunk_length_s=30,
-        batch_size=batch_size,
-        torch_dtype=torch_dtype,
-        device=device,
-    )
-
-    # GraniteSpeechFeatureExtractor currently does not accept a
-    # ``sampling_rate`` argument, but the ASR pipeline always supplies it.
-    # Wrap the feature extractor to ignore the extra kwarg instead of
-    # failing with ``TypeError``.
-    feature_extractor = pipe.feature_extractor
-    call_signature = inspect.signature(feature_extractor.__call__)
-    if "sampling_rate" not in call_signature.parameters:
-        original_call = feature_extractor.__call__
-
-        def _call_with_sampling_rate(self, *args, sampling_rate=None, **kwargs):
-            return original_call(*args, **kwargs)
-
-        feature_extractor.__call__ = types.MethodType(
-            _call_with_sampling_rate, feature_extractor
+    else:
+        torch_dtype = (
+            torch.bfloat16
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            else torch.float16
         )
 
-    generate_kwargs = {}
-    if source_lang and source_lang != "auto":
-        generate_kwargs["language"] = source_lang
+    try:
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_id,
+            device_map=device,
+            torch_dtype=torch_dtype,
+        )
+        tokenizer = processor.tokenizer
+    except Exception as exc:
+        logger.error(f"Failed to load Granite Speech model: {exc}")
+        raise
+
+    system_prompt = (
+        "Knowledge Cutoff Date: April 2024.\n"
+        "Today's Date: April 9, 2025.\n"
+        "You are Granite, developed by IBM. You are a helpful AI assistant"
+    )
+    user_prompt = "<|audio|>can you transcribe the speech into a written format?"
+
+    chat = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    text_prompt = tokenizer.apply_chat_template(
+        chat,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
 
     total_duration = sf.info(input_audio_file).duration
     chunk_duration = 30.0
@@ -244,7 +244,11 @@ def granite_speech_transcribe(
         )
         run_command(cm)
         chunk_files = sorted(
-            [f"{output_directory}/{f}" for f in os.listdir(output_directory) if f.endswith('.ogg')]
+            [
+                f"{output_directory}/{f}"
+                for f in os.listdir(output_directory)
+                if f.endswith(".ogg")
+            ]
         )
     else:
         one_file = f"{output_directory}/output000.ogg"
@@ -254,23 +258,60 @@ def granite_speech_transcribe(
 
     segments = []
     full_text = []
-    language = source_lang if source_lang else None
+    language = source_lang or None
 
-    for i, chunk in enumerate(chunk_files):
-        result = pipe(chunk, generate_kwargs=generate_kwargs)
-        text = result.get("text", "").strip()
+    progress_bar = tqdm(
+        chunk_files,
+        desc="Granite chunk processing",
+        unit="chunk",
+    )
+
+    for i, chunk in enumerate(progress_bar):
+        try:
+            audio_array, _ = librosa.load(chunk, sr=16000)
+
+            model_inputs = processor(
+                text_prompt,
+                audio_array,
+                device=device,
+                return_tensors="pt",
+            ).to(device)
+
+            model_outputs = model.generate(
+                **model_inputs,
+                max_new_tokens=400,
+                do_sample=False,
+                num_beams=1,
+            )
+
+            num_input_tokens = model_inputs["input_ids"].shape[-1]
+            new_tokens = torch.unsqueeze(
+                model_outputs[0, num_input_tokens:],
+                dim=0,
+            )
+
+            text = tokenizer.batch_decode(
+                new_tokens,
+                add_special_tokens=False,
+                skip_special_tokens=True,
+            )[0].strip()
+        except Exception as exc:
+            logger.error(f"Error processing chunk {chunk}: {exc}")
+            continue
+
         if text:
             full_text.append(text)
             chunk_start = i * chunk_duration
             chunk_end = min((i + 1) * chunk_duration, total_duration)
-            segments.append({
-                "text": text,
-                "start": chunk_start,
-                "end": chunk_end,
-            })
+            segments.append(
+                {
+                    "text": text,
+                    "start": chunk_start,
+                    "end": chunk_end,
+                }
+            )
 
-        if not language:
-            language = result.get("language")
+    progress_bar.close()
 
     language = language or "en"
 
@@ -287,18 +328,26 @@ def granite_speech_transcribe(
             duration = proportion * total_duration
             start_time = cursor
             end_time = min(total_duration, start_time + duration)
-            segments.append({
-                "text": sentence,
-                "start": start_time,
-                "end": end_time,
-            })
+            segments.append(
+                {
+                    "text": sentence,
+                    "start": start_time,
+                    "end": end_time,
+                }
+            )
             cursor = end_time
         if segments:
             segments[-1]["end"] = total_duration
 
     if not segments:
         text = " ".join(full_text).strip()
-        segments = [{"text": text, "start": 0.0, "end": total_duration}]
+        segments = [
+            {
+                "text": text,
+                "start": 0.0,
+                "end": total_duration,
+            }
+        ]
 
     audio = whisperx.load_audio(input_audio_file)
     return audio, {"segments": segments, "language": language}
