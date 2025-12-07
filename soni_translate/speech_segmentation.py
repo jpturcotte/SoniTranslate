@@ -168,6 +168,7 @@ def granite_speech_transcribe(
     compute_type="float16",
     batch_size=16,
     source_lang=None,
+    segment_duration_limit=30,
 ):
     """Transcribe audio with IBM Granite Speech using direct model calls.
 
@@ -175,8 +176,10 @@ def granite_speech_transcribe(
     Granite Speech feature extractor does not accept. Instead of patching the
     extractor, prepare the inputs manually with ``AutoProcessor`` and generate
     outputs with ``AutoModelForSpeechSeq2Seq``. Audio is chunked into
-    fixed-length segments (30s) so downstream alignment receives timestamps even
-    though Granite currently omits per-token timing.
+    fixed-length segments so downstream alignment receives timestamps even
+    though Granite currently omits per-token timing. The chunk length comes from
+    the UI's *Segment Duration Limit* setting to keep behavior consistent across
+    models.
     """
 
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
@@ -231,7 +234,7 @@ def granite_speech_transcribe(
     )
 
     total_duration = sf.info(input_audio_file).duration
-    chunk_duration = 30.0
+    chunk_duration = float(max(segment_duration_limit, 1))
 
     output_directory = "./granite_audio_parts"
     os.makedirs(output_directory, exist_ok=True)
@@ -408,6 +411,7 @@ def transcribe_speech(
             compute_type,
             batch_size,
             SOURCE_LANGUAGE,
+            segment_duration_limit,
         )
 
     # https://github.com/openai/whisper/discussions/277
