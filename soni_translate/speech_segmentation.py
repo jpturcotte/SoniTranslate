@@ -210,7 +210,11 @@ def granite_speech_transcribe(
             original_call = cls.__call__
 
             def _call_with_optional_sampling_rate(self, *args, **kwargs):
+                # The pipeline forwards ``sampling_rate`` and ``return_tensors``
+                # while chunking audio. The Granite extractor does not accept
+                # them, so drop both to avoid runtime errors.
                 kwargs.pop("sampling_rate", None)
+                kwargs.pop("return_tensors", None)
                 return original_call(self, *args, **kwargs)
 
             cls.__call__ = _call_with_optional_sampling_rate
