@@ -207,15 +207,10 @@ def granite_speech_transcribe(
 ):
     """Transcribe audio with IBM Granite Speech using direct model calls.
 
-    Implements advanced context handling and safer decoding inspired by the
-    research prompt in the user request:
-
-    * Moving Context Window: preserves a short history between chunks.
-    * Context Fencing Prompt: separates context from instructions to reduce
-      hallucinations.
-    * Robust Overlap-Stitch: word-based stitching to handle boundary
-      inconsistencies.
-    * Safe Decoding: deterministic beam search with repetition penalty.
+    The implementation keeps a rolling context window between chunks, fences
+    that context off from the instruction in the prompt, stitches overlapping
+    chunks by removing duplicated words, and uses deterministic decoding
+    settings to reduce hallucinations.
     """
 
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
@@ -254,10 +249,10 @@ def granite_speech_transcribe(
         logger.error(f"Failed to load Granite Speech model: {exc}")
         raise
 
-    # --- PROMPT CONFIGURATION BASED ON RESEARCH ---
+    # System prompt keeps the model focused on literal transcription
     system_prompt = "You are a precise transcription system."
 
-    # --- CHUNKING WITH OVERLAP ---
+    # Split the audio into overlapping chunks for manageable processing
     total_duration = sf.info(input_audio_file).duration
     # Enforce minimum chunk size of 5s to avoid micro-segment instability
     chunk_length = float(max(segment_duration_limit, 5))
@@ -311,7 +306,7 @@ def granite_speech_transcribe(
         try:
             audio_array, _ = librosa.load(chunk_path, sr=16000)
 
-            # --- DYNAMIC PROMPT CONSTRUCTION (CONTEXT FENCING) ---
+            # Build the prompt so previous text is context and not treated as new input
             if previous_context_window:
                 user_content = (
                     f"Context Information: {previous_context_window}\n"
