@@ -207,14 +207,11 @@ def granite_speech_transcribe(
         logger.error(f"Failed to load Granite Speech model: {exc}")
         raise
 
-    prompt_text = "Transcribe the audio."
+    prompt_text = "Transcribe the provided audio."
     conversation = [
         {
             "role": "user",
-            "content": [
-                {"type": "audio"},
-                {"type": "text", "text": prompt_text},
-            ],
+            "content": prompt_text,
         }
     ]
     text_prompt = processor.apply_chat_template(
