@@ -254,7 +254,7 @@ def granite_speech_transcribe(
             audio_array, _ = librosa.load(chunk, sr=16000)
             inputs = processor(
                 text=text_prompt,
-                audios=audio_array,
+                audio=audio_array,
                 sampling_rate=16000,
                 return_tensors="pt",
             ).to(device)
