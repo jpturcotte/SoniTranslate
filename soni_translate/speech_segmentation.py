@@ -207,8 +207,15 @@ def granite_speech_transcribe(
 ):
     """Transcribe audio with IBM Granite Speech using direct model calls.
 
-    Includes fuzzy Overlap-Stitch and sentence-level timestamp interpolation to
-    generate more accurate timestamps for downstream alignment.
+    Implements advanced context handling and safer decoding inspired by the
+    research prompt in the user request:
+
+    * Moving Context Window: preserves a short history between chunks.
+    * Context Fencing Prompt: separates context from instructions to reduce
+      hallucinations.
+    * Robust Overlap-Stitch: word-based stitching to handle boundary
+      inconsistencies.
+    * Safe Decoding: deterministic beam search with repetition penalty.
     """
 
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
@@ -225,7 +232,7 @@ def granite_speech_transcribe(
         nltk.download("punkt_tab")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Select compute type
+    # Select compute type based on hardware capabilities
     if compute_type == "float32":
         torch_dtype = torch.float32
     else:
@@ -247,39 +254,19 @@ def granite_speech_transcribe(
         logger.error(f"Failed to load Granite Speech model: {exc}")
         raise
 
-    # Granite Prompt Setup
-    system_prompt = (
-        "Knowledge Cutoff Date: April 2024.\n"
-        "Today's Date: April 9, 2025.\n"
-        "You are Granite, developed by IBM. You are a helpful AI assistant"
-    )
-    user_prompt = "<|audio|>can you transcribe the speech into a written format?"
-
-    chat = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-
-    text_prompt = tokenizer.apply_chat_template(
-        chat,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    # --- PROMPT CONFIGURATION BASED ON RESEARCH ---
+    system_prompt = "You are a precise transcription system."
 
     # --- CHUNKING WITH OVERLAP ---
     total_duration = sf.info(input_audio_file).duration
-    # Use the limit provided, but default to 30s if too small
+    # Enforce minimum chunk size of 5s to avoid micro-segment instability
     chunk_length = float(max(segment_duration_limit, 5))
-    chunk_overlap = 1.0  # 1 second overlap to catch split words
+    chunk_overlap = 1.5  # Slightly larger overlap to ensure boundary continuity
 
     output_directory = "./granite_audio_parts"
     os.makedirs(output_directory, exist_ok=True)
     remove_directory_contents(output_directory)
 
-    # Use ffmpeg to segment with overlap is complex, so we calculate time segments manually
-    # and extract using librosa or ffmpeg seek. Here we stick to ffmpeg for stability,
-    # but we generate specific commands for each overlapping chunk.
-    
     chunk_files = []
     chunk_times = []  # Store (start, end) for each chunk
 
@@ -292,8 +279,6 @@ def granite_speech_transcribe(
 
         filename = f"{output_directory}/output{chunk_idx:03d}.ogg"
 
-        # Extract specific segment with ffmpeg
-        # -ss seeks to start, -t sets duration
         cm = (
             f'ffmpeg -y -hide_banner -loglevel error -ss {current_start} -t {duration} '
             f'-i "{input_audio_file}" -c:a libvorbis "{filename}"'
@@ -306,26 +291,50 @@ def granite_speech_transcribe(
         if chunk_end >= total_duration:
             break
 
-        # Advance by length minus overlap
         current_start += (chunk_length - chunk_overlap)
         chunk_idx += 1
 
     segments = []
     language = source_lang or "en"
-    
+
     progress_bar = tqdm(
         chunk_files,
         desc="Granite chunk processing",
         unit="chunk",
     )
 
-    # Accumulate full transcription to compare overlapping regions across chunks
-    full_transcription_text = ""
+    # Track context and assembled transcript for stitching
+    full_transcription_words = []
+    previous_context_window = ""
 
     for i, chunk_path in enumerate(progress_bar):
         try:
-            # Load audio for the model
             audio_array, _ = librosa.load(chunk_path, sr=16000)
+
+            # --- DYNAMIC PROMPT CONSTRUCTION (CONTEXT FENCING) ---
+            if previous_context_window:
+                user_content = (
+                    f"Context Information: {previous_context_window}\n"
+                    "Instruction: Transcribe the following audio exactly as spoken. "
+                    "Do not add information from the context if it is not present in the audio.\n"
+                    "<|audio|>"
+                )
+            else:
+                user_content = (
+                    "Instruction: Transcribe the following audio exactly as spoken.\n"
+                    "<|audio|>"
+                )
+
+            chat = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+
+            text_prompt = tokenizer.apply_chat_template(
+                chat,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
 
             model_inputs = processor(
                 text_prompt,
@@ -334,11 +343,14 @@ def granite_speech_transcribe(
                 return_tensors="pt",
             ).to(device)
 
+            # --- GENERATION PARAMETERS (ANTI-HALLUCINATION) ---
             model_outputs = model.generate(
                 **model_inputs,
                 max_new_tokens=400,
+                num_beams=4,
                 do_sample=False,
-                num_beams=1,
+                temperature=0.0,
+                repetition_penalty=1.15,
             )
 
             num_input_tokens = model_inputs["input_ids"].shape[-1]
@@ -360,18 +372,38 @@ def granite_speech_transcribe(
         if not text:
             continue
 
-        # --- FUZZY STITCHING LOGIC ---
-        cutoff = find_best_overlap_cutoff(full_transcription_text, text)
-        unique_text = text[cutoff:].strip()
+        # --- WORD-BASED OVERLAP STITCHING ---
+        curr_words = text.split()
+        unique_words = curr_words
+
+        if full_transcription_words:
+            tail_words = full_transcription_words[-15:]
+            head_words = curr_words[:15]
+
+            best_match_len = 0
+            for length in range(min(len(tail_words), len(head_words)), 0, -1):
+                if tail_words[-length:] == head_words[:length]:
+                    best_match_len = length
+                    break
+
+            if best_match_len > 0:
+                unique_words = curr_words[best_match_len:]
+
+        unique_text = " ".join(unique_words).strip()
 
         if not unique_text:
             continue
 
-        # Append for future overlap comparisons
-        full_transcription_text = (full_transcription_text + " " + unique_text).strip()
+        full_transcription_words.extend(unique_words)
+
+        # --- UPDATE CONTEXT WINDOW ---
+        context_len = 25
+        if len(full_transcription_words) > context_len:
+            previous_context_window = " ".join(full_transcription_words[-context_len:])
+        else:
+            previous_context_window = " ".join(full_transcription_words)
 
         # --- SENTENCE SEGMENTATION & TIMESTAMP INTERPOLATION ---
-        # Get the actual time window of this chunk
         c_start, c_end = chunk_times[i]
 
         sentences = nltk.sent_tokenize(unique_text)
@@ -381,12 +413,12 @@ def granite_speech_transcribe(
         lengths = [max(len(s), 1) for s in sentences]
         total_len = sum(lengths)
 
-        seg_start_offset = 0.0
-        if i > 0 and cutoff > 0:
-            seg_start_offset = chunk_overlap
+        cursor = c_start
+        if i > 0:
+            cursor += chunk_overlap
+            cursor = min(cursor, c_end)
 
-        available_duration = max((c_end - c_start) - seg_start_offset, 0.1)
-        cursor = c_start + seg_start_offset
+        available_duration = max(c_end - cursor, 0.1)
 
         for s_text, s_len in zip(sentences, lengths):
             proportion = s_len / total_len
@@ -402,11 +434,9 @@ def granite_speech_transcribe(
 
     progress_bar.close()
 
-    # Fallback if nothing was transcribed
     if not segments:
         segments = [{"text": "", "start": 0.0, "end": total_duration}]
 
-    # Ensure last segment doesn't exceed total duration
     if segments[-1]["end"] > total_duration:
         segments[-1]["end"] = total_duration
 
