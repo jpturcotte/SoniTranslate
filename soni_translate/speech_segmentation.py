@@ -9,6 +9,8 @@ import gc
 import os
 import soundfile as sf
 import nltk
+import inspect
+import types
 from contextlib import contextmanager
 from IPython.utils import capture # noqa
 from .language_configuration import EXTRA_ALIGN, INVERTED_LANGUAGES
@@ -207,6 +209,22 @@ def granite_speech_transcribe(
         torch_dtype=torch_dtype,
         device=device,
     )
+
+    # GraniteSpeechFeatureExtractor currently does not accept a
+    # ``sampling_rate`` argument, but the ASR pipeline always supplies it.
+    # Wrap the feature extractor to ignore the extra kwarg instead of
+    # failing with ``TypeError``.
+    feature_extractor = pipe.feature_extractor
+    call_signature = inspect.signature(feature_extractor.__call__)
+    if "sampling_rate" not in call_signature.parameters:
+        original_call = feature_extractor.__call__
+
+        def _call_with_sampling_rate(self, *args, sampling_rate=None, **kwargs):
+            return original_call(*args, **kwargs)
+
+        feature_extractor.__call__ = types.MethodType(
+            _call_with_sampling_rate, feature_extractor
+        )
 
     generate_kwargs = {}
     if source_lang and source_lang != "auto":
