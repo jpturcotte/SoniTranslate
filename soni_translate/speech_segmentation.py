@@ -177,7 +177,7 @@ def granite_speech_transcribe(
     to maintain compatibility with Whisper-style segments.
     """
 
-    from transformers import pipeline
+    from transformers import AutoFeatureExtractor, pipeline
 
     try:
         nltk.data.find("tokenizers/punkt")
@@ -196,11 +196,31 @@ def granite_speech_transcribe(
     else:
         torch_dtype = torch.float32
 
+    feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
+
+    # The Granite Speech feature extractor currently does not accept a
+    # ``sampling_rate`` argument, but the Transformers ASR pipeline passes it
+    # when chunking audio. Patch the class-level callable (guarded for
+    # idempotency) so every Granite extractor instance ignores the extra keyword
+    # and remains compatible with the pipeline.
+    if feature_extractor.__class__.__name__ == "GraniteSpeechFeatureExtractor":
+        cls = feature_extractor.__class__
+
+        if not getattr(cls, "_sampling_rate_patched", False):
+            original_call = cls.__call__
+
+            def _call_with_optional_sampling_rate(self, *args, **kwargs):
+                kwargs.pop("sampling_rate", None)
+                return original_call(self, *args, **kwargs)
+
+            cls.__call__ = _call_with_optional_sampling_rate
+            cls._sampling_rate_patched = True
+
     pipe = pipeline(
         "automatic-speech-recognition",
         model=model_id,
         tokenizer=model_id,
-        feature_extractor=model_id,
+        feature_extractor=feature_extractor,
         max_new_tokens=128,
         chunk_length_s=30,
         batch_size=batch_size,
